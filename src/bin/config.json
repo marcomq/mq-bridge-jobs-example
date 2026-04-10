@@ -1,9 +1,9 @@
 {
   "input": {
-    "file": {
-      "path": "jobs.jsonl",
-      "delete": true,
-      "mode": "consume"
+    "nats": {
+      "url": "nats://localhost:4222",
+      "subject": "test-stream.pipeline",
+      "stream": "test-stream"
     }
   },
   "output": {

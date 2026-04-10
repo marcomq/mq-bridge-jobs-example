@@ -1,6 +1,6 @@
 **Introduction**
 
-Every web application eventually needs background jobs. Send an email, resize an image, import some data. The usual solutions come with a lot of baggage: Redis as a dependency, a separate worker process, a framework that wants to own your architecture.
+Every web application eventually needs background jobs. Send an email, resize an image, import some data. Most background job libraries in other languages require you to commit to their ecosystem from day one – their queue, their worker format, their retry logic. I wanted something where I could start with a file on disk and scale up when needed, without rewriting my business logic.
 
 I wanted something simpler. Start with a file during development, switch to a real broker for production – without changing my business logic.
 
@@ -69,12 +69,19 @@ impl GenerateReport {
 }
 ```
 
+Let's also add a lib.rs file:
+```rust
+// src/lib.rs
+pub mod jobs;
+```
+
 Then we register handlers for each job type using `TypeHandler`:
 
 ```rust
 // src/bin/worker.rs 
 let jobs = TypeHandler::new()
     .add(SendEmail::KIND, |job: SendEmail| async move {
+        // We are not actually sending a mail here - just print a log message
         tracing::info!("Sending email to {}", job.to);
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(Handled::Ack)
@@ -95,8 +102,10 @@ No Docker. No broker. Just a file on disk for our worker.
 // bin/worker.rs
 //...
 let route = Route::new(
-    Endpoint::new_file("jobs.jsonl"),
-    Endpoint::new_memory("results", 100),
+    Endpoint::new(EndpointType::File(
+        FileConfig::new("jobs.jsonl").with_mode(FileConsumerMode::Consume { delete: true }),
+    )),
+    Endpoint::null(), // No output needed here
 ).with_handler(jobs);
 
 route.deploy("job_worker").await?;
@@ -120,6 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
         .init();
 
+    // actual stuff
     let jobs = TypeHandler::new()
         .add(SendEmail::KIND, |job: SendEmail| async move {
             tracing::info!("Sending email to {}", job.to);
@@ -200,27 +210,27 @@ When analyzing the file `jobs.jsonl`, we can see that it is empty. This is becau
 delete the line, by using `FileConsumerMode::Consume { delete: true }` on the consumer side.
 
 We would keep the line and just send newly received messages with `delete: false`.
-But we would also then send all messages on ntext start of the consumer.
+But we would also then send all messages on next start of the consumer.
 
 ---
 
 **Step 4: Switch to Json config**
 
 The business logic stays in Rust. The infrastructure moves to config:
-`cargo add serde-json`
+`cargo add serde_json`
 
+`src/bin/config.json`
 ```json
-# src/bin/config.json
 {
   "input": {
     "file": {
-    "path": "jobs.jsonl",
-    "delete": true,
-    "mode": "consume"
+      "path": "jobs.jsonl",
+      "delete": true,
+      "mode": "consume"
     }
   },
   "output": {
-    "null": {}
+    "null": null
   }
 }
 ```
@@ -239,33 +249,58 @@ let route: Route = serde_json::from_str(include_str!("config.json"))?;
 let publisher = Publisher::new(route.input).await?;
 ```
 
+We can load the configuration from file or database. And the code is actually smaller now.
+
 Now you can also change the backend without touching your handler code.
 
 ---
 
 **Step 5: Switch to NATS for production**
 
-One Docker command:
+To have a real job engine, you'll want to run the worker on a separate machine. 
+Let's use `nats` for that. It's lightweight – just a single binary, no dependencies.
+
+First, we need to enable feature `nats` in Cargo.toml:
+
+```toml
+mq-bridge = { version = "0.2.11", features = ["nats"] }
+```
+
+Then, we install nats via brew
+```bash
+brew install nats-server
+# Ubuntu/Debian 
+# wget https://github.com/nats-io/nats-server/releases/latest/download/nats-server-linux-amd64.deb
+# sudo apt install ./nats-server-linux-amd64.deb
+nats-server -js
+```
+
+Or run it with docker:
 
 ```bash
-docker run -p 4222:4222 nats:latest -js
+docker run -p 4222:4222 nats:2.12.2 -js
 ```
 
 One config change:
 
 ```yaml
-job_worker:
-  input:
-    nats:
-      url: "nats://localhost:4222"
-      subject: "jobs"
-      stream: "job_stream"
-  output:
-    memory:
-      topic: "results"
+{
+  "input": {
+    "nats": {
+      "url": "nats://localhost:4222",
+      "subject": "test-stream.pipeline",
+      "stream": "test-stream" 
+    }
+  },
+  "output": {
+    "null": null
+  }
+}
 ```
 
-Your handler code? Untouched.
+The rest of the code is untouched.
+You can now retry to start the worker.rs, it will connect with nats 
+and submit.rs will also publish the message to nats.
 
 ---
 
@@ -273,32 +308,62 @@ Your handler code? Untouched.
 
 Switching to NATS doesn't just give you a real broker. It unlocks everything mq-bridge builds on top:
 
-- **Retries with exponential backoff** – transient failures are retried automatically
-- **Dead-letter queues** – failed jobs land somewhere you can inspect them
-- **Deduplication** – the same job won't be processed twice
-- **Concurrency** – process multiple jobs in parallel with one config line
+You can also just add middlewares in the json, for example to define retries for the publisher:
 
-```yaml
-job_worker:
-  concurrency: 8
-  input:
-    nats:
-      ...
-  middlewares:
-    - retry:
-        max_attempts: 3
-        initial_interval_ms: 500
-    - dlq:
-        endpoint:
-          file: "./failed_jobs.jsonl"
+```json
+{
+    "nats": {
+        "url": "nats://localhost:4222",
+        "subject": "test-stream.pipeline",
+        "stream": "test-stream"
+    },
+    "middlewares": [
+    {
+        "retry": {
+            "initial_interval_ms": 100,
+            "max_attempts": 3,
+            "max_interval_ms": 5000,
+            "multiplier": 2
+        }
+    },
+    {
+        "dlq": {
+            "endpoint": {
+                "middlewares": [],
+                "file": {
+                "format": "normal",
+                "path": "error.log"
+                }
+            }
+        }
+    }
+    ]
+}
 ```
+
+If you are already using mongodb, mysql, mariadb or postgres, you can still 
+re-use them to store and forward computation events.
+Switching may just be a simple configuration task.
+
+For testing, there is a memory endpoint available. So you don't need to spin
+up your database or broker in your unit tests to run tests.
+
+If you have a more simple tasks - these are also available. You may skip the 
+whole event handler and route concept and just receive or send to your endpoints with the same API calls.
 
 ---
 
 **Conclusion**
 
-[*1-2 sentences summarizing the journey: file → NATS, zero handler changes*]
+Overall, mq-bridge covers more than just background jobs.
+You may use it for events or just to receive and send messages from your existing brokers.
+Or you could just use it to easily scale up your setup by adding kafka as
+buffer or fan out.
 
-[*1 sentence honest limitation: this is not Sidekiq, no web UI, no job history out of the box*]
+Mq-bridge is still a young library. Don't expect it to as complete as for example 
+Watermill (go). 
+Some concepts like event-stores are missing, as it is mostly just focussed on transport.
+And the documentation still needs improvement. This tutorial is a first step 
+toward better documentation.
 
-[*Call to action: feedback welcome, repo link*]
+Feedback welcome: https://github.com/marcomq/mq-bridge/issues
