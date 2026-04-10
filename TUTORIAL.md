@@ -196,4 +196,109 @@ Let's now submit a "SendEmail" in another shell:
 
 The worker will receive the task and print a new log message `INFO worker: Sending email to user@example.com`
 
+When analyzing the file `jobs.jsonl`, we can see that it is empty. This is because we 
+delete the line, by using `FileConsumerMode::Consume { delete: true }` on the consumer side.
+
+We would keep the line and just send newly received messages with `delete: false`.
+But we would also then send all messages on ntext start of the consumer.
+
 ---
+
+**Step 4: Switch to Json config**
+
+The business logic stays in Rust. The infrastructure moves to config:
+`cargo add serde-json`
+
+```json
+# src/bin/config.json
+{
+  "input": {
+    "file": {
+    "path": "jobs.jsonl",
+    "delete": true,
+    "mode": "consume"
+    }
+  },
+  "output": {
+    "null": {}
+  }
+}
+```
+
+```rust
+// worker.rs - load route from config instead
+let route: Route = serde_json::from_str(include_str!("mq-bridge.json"))?;
+let route = route.with_handler(jobs);
+
+route.deploy("job_worker").await?;
+```
+
+```rust
+// submit.rs - create a publisher from route / config
+let route: Route = serde_json::from_str(include_str!("config.json"))?;
+let publisher = Publisher::new(route.input).await?;
+```
+
+Now you can also change the backend without touching your handler code.
+
+---
+
+**Step 5: Switch to NATS for production**
+
+One Docker command:
+
+```bash
+docker run -p 4222:4222 nats:latest -js
+```
+
+One config change:
+
+```yaml
+job_worker:
+  input:
+    nats:
+      url: "nats://localhost:4222"
+      subject: "jobs"
+      stream: "job_stream"
+  output:
+    memory:
+      topic: "results"
+```
+
+Your handler code? Untouched.
+
+---
+
+**What you get for free**
+
+Switching to NATS doesn't just give you a real broker. It unlocks everything mq-bridge builds on top:
+
+- **Retries with exponential backoff** – transient failures are retried automatically
+- **Dead-letter queues** – failed jobs land somewhere you can inspect them
+- **Deduplication** – the same job won't be processed twice
+- **Concurrency** – process multiple jobs in parallel with one config line
+
+```yaml
+job_worker:
+  concurrency: 8
+  input:
+    nats:
+      ...
+  middlewares:
+    - retry:
+        max_attempts: 3
+        initial_interval_ms: 500
+    - dlq:
+        endpoint:
+          file: "./failed_jobs.jsonl"
+```
+
+---
+
+**Conclusion**
+
+[*1-2 sentences summarizing the journey: file → NATS, zero handler changes*]
+
+[*1 sentence honest limitation: this is not Sidekiq, no web UI, no job history out of the box*]
+
+[*Call to action: feedback welcome, repo link*]

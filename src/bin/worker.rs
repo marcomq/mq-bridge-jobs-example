@@ -1,8 +1,4 @@
-use mq_bridge::{
-    Handled, Route,
-    models::{Endpoint, EndpointType, FileConfig, FileConsumerMode},
-    type_handler::TypeHandler,
-};
+use mq_bridge::{Handled, Route, type_handler::TypeHandler};
 use mq_bridge_jobs_example::jobs::{GenerateReport, SendEmail};
 use std::time::Duration;
 
@@ -25,13 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Handled::Ack)
         });
 
-    let route = Route::new(
-        Endpoint::new(EndpointType::File(
-            FileConfig::new("jobs.jsonl").with_mode(FileConsumerMode::Consume { delete: true }),
-        )),
-        Endpoint::null(), // No output needed here
-    )
-    .with_handler(jobs);
+    let route: Route = serde_json::from_str(include_str!("config.json"))?;
+    let route = route.with_handler(jobs);
     route.deploy("job_worker").await?;
 
     // wait for ctrl + c

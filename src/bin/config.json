@@ -1,0 +1,12 @@
+{
+  "input": {
+    "file": {
+      "path": "jobs.jsonl",
+      "delete": true,
+      "mode": "consume"
+    }
+  },
+  "output": {
+    "null": null
+  }
+}

@@ -1,8 +1,4 @@
-use mq_bridge::{
-    Publisher,
-    models::{Endpoint, EndpointType, FileConfig},
-    msg,
-};
+use mq_bridge::{Publisher, Route, msg};
 use mq_bridge_jobs_example::jobs::SendEmail;
 
 #[tokio::main]
@@ -13,10 +9,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // actual stuff
-    let publisher = Publisher::new(Endpoint::new(EndpointType::File(FileConfig::new(
-        "jobs.jsonl",
-    ))))
-    .await?;
+    let route: Route = serde_json::from_str(include_str!("config.json"))?;
+    let publisher = Publisher::new(route.input).await?;
     publisher
         .send(msg!(
             SendEmail {
