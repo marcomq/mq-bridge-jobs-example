@@ -3,7 +3,8 @@
     "file": {
       "path": "jobs.jsonl",
       "delete": true,
-      "mode": "consume"
+      "mode": "consume",
+      "format": "json"
     }
   },
   "output": {

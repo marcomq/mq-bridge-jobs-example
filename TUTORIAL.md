@@ -1,20 +1,23 @@
 **Introduction**
 
-Every web application eventually needs background jobs. Send an email, resize an image, import some data. Most background job libraries in other languages require you to commit to their ecosystem from day one – their queue, their worker format, their retry logic. I wanted something where I could start with a file on disk and scale up when needed, without rewriting my business logic.
+Every web application eventually needs background jobs. Send an email, resize an image, import some data. Most background job libraries in other languages require you to commit to their ecosystem from day one – their queue, their worker format, their retry logic.
 
 I wanted something simpler. Start with a file during development, switch to a real broker for production – without changing my business logic.
 
 This is how I built a background job system in Rust using [mq-bridge](https://github.com/marcomq/mq-bridge).
 
+---[mq-bridge-jobs-tutorial](https://github.com/marcomq/mq-bridge-jobs-example)
+
 **Step 1: Create Cargo.toml**
-Let's run `cargo init`, `cargo add mq-bridge serde tokio tracing tracing-subscriber` and some other modifications: 
+
+Let's run `cargo init`, `cargo add mq-bridge serde tokio tracing tracing-subscriber` and some other modifications:
 
 ```toml
 # Cargo.toml
 [package]
 name = "mq-bridge-jobs-example"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 mq-bridge = "0.2.11"
@@ -32,8 +35,7 @@ name = "submit"
 path = "src/bin/submit.rs"
 ```
 
-We want 2 separate binaries: `worker` that waits for tasks and `submit` that is 
-sending a single mail, which should be received by our worker.
+We want 2 separate binaries: `worker` that waits for tasks and `submit` that sends a single mail, which should be received by our worker.
 
 ---
 
@@ -56,11 +58,12 @@ pub struct GenerateReport {
     pub user_id: u32,
 }
 ```
-In addition, we should also define strings to identify each struct:
+
+In addition, we define strings to identify each struct:
+
 ```rust
 // src/jobs.rs
 impl SendEmail {
-    // We just need some string as identifier for TypeHandler
     pub const KIND: &'static str = "send_email";
 }
 
@@ -69,7 +72,8 @@ impl GenerateReport {
 }
 ```
 
-Let's also add a lib.rs file:
+Let's also add a `lib.rs` file:
+
 ```rust
 // src/lib.rs
 pub mod jobs;
@@ -78,7 +82,7 @@ pub mod jobs;
 Then we register handlers for each job type using `TypeHandler`:
 
 ```rust
-// src/bin/worker.rs 
+// src/bin/worker.rs
 let jobs = TypeHandler::new()
     .add(SendEmail::KIND, |job: SendEmail| async move {
         // We are not actually sending a mail here - just print a log message
@@ -99,7 +103,7 @@ let jobs = TypeHandler::new()
 No Docker. No broker. Just a file on disk for our worker.
 
 ```rust
-// bin/worker.rs
+// src/bin/worker.rs
 //...
 let route = Route::new(
     Endpoint::new(EndpointType::File(
@@ -111,9 +115,10 @@ let route = Route::new(
 route.deploy("job_worker").await?;
 ```
 
-Together with logging and everything, the complete file  worker.rs now looks like this:
+Together with logging and everything, the complete `worker.rs` now looks like this:
+
 ```rust
-// bin/worker.rs (complete)
+// src/bin/worker.rs (complete)
 use mq_bridge::{
     Handled, Route,
     models::{Endpoint, EndpointType, FileConfig, FileConsumerMode},
@@ -124,12 +129,10 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // init logging
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
         .init();
 
-    // actual stuff
     let jobs = TypeHandler::new()
         .add(SendEmail::KIND, |job: SendEmail| async move {
             tracing::info!("Sending email to {}", job.to);
@@ -148,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Endpoint::null(), // No output needed here
     )
     .with_handler(jobs);
+
     route.deploy("job_worker").await?;
 
     tracing::info!("Worker running — press Ctrl-C to exit");
@@ -157,10 +161,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-To submit a job, just append a line to `jobs.jsonl` in our submit.rs:
+To submit a job, just append a line to `jobs.jsonl` in our `submit.rs`:
 
 ```rust
-// bin/submit.rs
+// src/bin/submit.rs
 use mq_bridge::{
     Publisher,
     models::{Endpoint, EndpointType, FileConfig},
@@ -170,16 +174,15 @@ use mq_bridge_jobs_example::jobs::SendEmail;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // init logging
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
         .init();
-    
-    // actual stuff
+
     let publisher = Publisher::new(Endpoint::new(EndpointType::File(FileConfig::new(
         "jobs.jsonl",
     ))))
     .await?;
+
     publisher
         .send(msg!(
             SendEmail {
@@ -191,33 +194,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     Ok(())
 }
-
 ```
 
 Works completely offline. Great for development and testing.
 
+Now let's test it. Open a first shell:
 
-Now, let's test it and open our first shell:
-`cargo run --bin worker`
+```bash
+cargo run --bin worker
+```
 
-We are now having the worker running. It is waiting for file modifications.
-Let's now submit a "SendEmail" in another shell:
-`cargo run --bin submit`
+The worker is now running and waiting for file modifications. In a second shell, submit a job:
 
-The worker will receive the task and print a new log message `INFO worker: Sending email to user@example.com`
+```bash
+cargo run --bin submit
+```
 
-When analyzing the file `jobs.jsonl`, we can see that it is empty. This is because we 
-delete the line, by using `FileConsumerMode::Consume { delete: true }` on the consumer side.
+The worker will receive the task and print:
+```
+INFO worker: Sending email to user@example.com
+```
 
-We would keep the line and just send newly received messages with `delete: false`.
-But we would also then send all messages on next start of the consumer.
+
+Instead of using the submit binary, you could also just simply write a line to the file
+`echo '{"message_id":1,"payload":{"subject":"Welcome!","to":"user@example.com"},"metadata":{"kind":"send_mail"}}' > jobs.jsonl`
+Afterwards `jobs.jsonl` is empty — because `FileConsumerMode::Consume { delete: true }` removes consumed lines. With `delete: false`, lines would be kept and replayed on the next worker start.
+
+
+There is also a `GroupSubscribe` to prevent re-deliver by tracking the current 
+offset via separate `.offset` file.
 
 ---
 
-**Step 4: Switch to Json config**
+**Step 4: Switch to JSON config**
 
 The business logic stays in Rust. The infrastructure moves to config:
-`cargo add serde_json`
+
+```bash
+cargo add serde_json
+```
 
 `src/bin/config.json`
 ```json
@@ -236,60 +251,65 @@ The business logic stays in Rust. The infrastructure moves to config:
 ```
 
 ```rust
-// worker.rs - load route from config instead
-let route: Route = serde_json::from_str(include_str!("mq-bridge.json"))?;
+// src/bin/worker.rs - load route from config
+let route: Route = serde_json::from_str(include_str!("config.json"))?;
 let route = route.with_handler(jobs);
-
 route.deploy("job_worker").await?;
 ```
 
 ```rust
-// submit.rs - create a publisher from route / config
+// src/bin/submit.rs - create a publisher from the same config
 let route: Route = serde_json::from_str(include_str!("config.json"))?;
 let publisher = Publisher::new(route.input).await?;
 ```
 
-We can load the configuration from file or database. And the code is actually smaller now.
+You can now load the configuration from a file or database. The code is smaller, and you can change the backend without touching your handler code.
 
-Now you can also change the backend without touching your handler code.
+
+In a later production scenario, you might want to use a separate publisher configuration. 
+The are properties that are only available for consumers or
+publishers and there would be a warning when using invalid settings.
+Also, you might want to configure a specific kafka group_id or use separate topics for fan out.
+But for this example, using a common NATS configuration works fine.
 
 ---
 
 **Step 5: Switch to NATS for production**
 
-To have a real job engine, you'll want to run the worker on a separate machine. 
-Let's use `nats` for that. It's lightweight – just a single binary, no dependencies.
+To run the worker on a separate machine, you'll want a real broker. NATS is a great fit — it's lightweight, just a single binary with no dependencies.
 
-First, we need to enable feature `nats` in Cargo.toml:
+First, enable the `nats` feature in `Cargo.toml`:
 
 ```toml
 mq-bridge = { version = "0.2.11", features = ["nats"] }
 ```
 
-Then, we install nats via brew
-```bash
-brew install nats-server
-# Ubuntu/Debian 
-# wget https://github.com/nats-io/nats-server/releases/latest/download/nats-server-linux-amd64.deb
-# sudo apt install ./nats-server-linux-amd64.deb
-nats-server -js
-```
+This just enables the "nats" feature. We can simply re-run the previous
+example. Nothing changes yet, it just needs longer to compile.
 
-Or run it with docker:
+Start NATS with JetStream:
 
 ```bash
+# macOS
+brew install nats-server && nats-server -js
+
+# or Ubuntu/Debian
+wget https://github.com/nats-io/nats-server/releases/latest/download/nats-server-linux-amd64.deb
+sudo apt install ./nats-server-linux-amd64.deb && nats-server -js
+
+# or Docker
 docker run -p 4222:4222 nats:2.12.2 -js
 ```
 
-One config change:
+One config change, no code changes:
 
-```yaml
+```json
 {
   "input": {
     "nats": {
       "url": "nats://localhost:4222",
       "subject": "test-stream.pipeline",
-      "stream": "test-stream" 
+      "stream": "test-stream"
     }
   },
   "output": {
@@ -298,72 +318,145 @@ One config change:
 }
 ```
 
-The rest of the code is untouched.
-You can now retry to start the worker.rs, it will connect with nats 
-and submit.rs will also publish the message to nats.
+Restart worker and submit — both now talk to NATS. The handler code is untouched.
 
 ---
 
 **What you get for free**
 
-Switching to NATS doesn't just give you a real broker. It unlocks everything mq-bridge builds on top:
-
-You can also just add middlewares in the json, for example to define retries for the publisher:
+Switching to NATS unlocks everything mq-bridge builds on top. You can add middlewares in the config, for example retries and a dead-letter queue (DLQ) for failed messages:
 
 ```json
 {
-    "nats": {
-        "url": "nats://localhost:4222",
-        "subject": "test-stream.pipeline",
-        "stream": "test-stream"
-    },
-    "middlewares": [
+  "nats": {
+    "url": "nats://localhost:4222",
+    "subject": "test-stream.pipeline",
+    "stream": "test-stream"
+  },
+  "middlewares": [
     {
-        "retry": {
-            "initial_interval_ms": 100,
-            "max_attempts": 3,
-            "max_interval_ms": 5000,
-            "multiplier": 2
-        }
+      "retry": {
+        "max_attempts": 3,
+        "max_interval_ms": 5000,
+        "initial_interval_ms": 100,
+        "multiplier": 2
+      }
     },
     {
-        "dlq": {
-            "endpoint": {
-                "middlewares": [],
-                "file": {
-                "format": "normal",
-                "path": "error.log"
-                }
-            }
+      "dlq": {
+        "endpoint": {
+          "file": {
+            "path": "error.log"
+          }
         }
+      }
     }
-    ]
+  ]
 }
 ```
 
-If you are already using mongodb, mysql, mariadb or postgres, you can still 
-re-use them to store and forward computation events.
-Switching may just be a simple configuration task.
+The `retry` middleware will retry failed deliveries with exponential backoff. If all attempts are exhausted, the `dlq` middleware writes the message to `error.log` instead of dropping it silently.
 
-For testing, there is a memory endpoint available. So you don't need to spin
-up your database or broker in your unit tests to run tests.
+If you are already using MongoDB, MySQL, MariaDB, or PostgreSQL, you can use them as your queue backend as well — just a config change.
 
-If you have a more simple tasks - these are also available. You may skip the 
-whole event handler and route concept and just receive or send to your endpoints with the same API calls.
+
+If you just want message forwarding from one endpoint to another or an UI to 
+create different json configs, you can also use 
+mq-bridge-app (cargo install mq-bridge-app).
+The code also shows how you would use mq-bridge as webserver.
+
+If you just need a simple send and receive - this is also available. You may skip the 
+whole event handler and route concept and just use the same API calls for Kafka,
+RabbitMQ and NATS.
+
+---
+
+**Step 6: Testing with the memory endpoint**
+
+Because mq-bridge uses the same trait for all backends, you can test your handlers without any broker or file system — just an in-memory channel.
+
+Let's add a test for submit.rs:
+
+```rust
+
+// src/bin/submit.rs
+use mq_bridge::{msg, Publisher, Route};
+use mq_bridge_jobs_example::jobs::SendEmail;
+
+async fn send_mail(publisher: Publisher) -> Result<(), Box<dyn std::error::Error>> {
+    publisher
+        .send(msg!(
+            SendEmail {
+                to: "user@example.com".into(),
+                subject: "Welcome!".into()
+            },
+            SendEmail::KIND
+        ))
+        .await?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // init logging
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+        .init();
+
+    // actual stuff
+    let route: Route = serde_json::from_str(include_str!("config.json"))?;
+    let publisher = Publisher::new(route.input).await?;
+    send_mail(publisher).await
+}
+#[cfg(test)]
+mod tests {
+    use mq_bridge::endpoints::memory::MemoryConsumer;
+    use mq_bridge::traits::MessageConsumer;
+    use mq_bridge::Publisher;
+    use mq_bridge::models::Endpoint;
+    use mq_bridge_jobs_example::jobs::SendEmail;
+
+    use crate::send_mail;
+
+    #[tokio::test]
+    async fn test_submit_sends_email_job() {
+        let topic = "test-submit";
+        let mut consumer = MemoryConsumer::new_local(topic, 10);
+        let publisher = Publisher::new(Endpoint::new_memory(topic, 10)).await.unwrap();
+        send_mail(publisher).await.unwrap();
+        let received = consumer.receive().await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&received.message.payload).unwrap();
+        assert_eq!(payload["to"], "user@example.com");
+        assert_eq!(received.message.metadata["kind"], SendEmail::KIND);
+    }
+}
+
+```
+
+No broker, no file, no test containers. The same `TypeHandler` that runs in production is tested here — only the transport is swapped.
+
+
+**What not to expect**
+
+Not all aspects and features of brokers or databases are supported. Some features 
+are emulated, other features may not be implemented yet. Don't expect a full grown
+framework that guides you on how to do stuff or already prevents misconfiguration
+during compile time.
 
 ---
 
 **Conclusion**
 
-Overall, mq-bridge covers more than just background jobs.
-You may use it for events or just to receive and send messages from your existing brokers.
-Or you could just use it to easily scale up your setup by adding kafka as
-buffer or fan out.
+mq-bridge covers more than just background jobs. You can use it for events, or to send and receive messages from existing brokers. And you can scale up by adding Kafka as a buffer or fan-out layer — again, just config.
 
-Mq-bridge is still a young library. Don't expect it to as complete as for example 
-Watermill (go). 
-Some concepts like event-stores are missing, as it is mostly just focussed on transport.
-And the documentation still needs improvement. This tutorial is a first step 
-toward better documentation.
+mq-bridge is still a young library. Don't expect it to be as complete as Watermill (Go)  or Java Spring. It uses some of their concepts, but it doesn't try to be the same — event sourcing and aggregate management are out of scope for now, as the focus is on transport. Documentation is still growing, and this tutorial is a first step toward that.
 
-Feedback welcome: https://github.com/marcomq/mq-bridge/issues
+
+This tutorial is available here:
+https://github.com/marcomq/mq-bridge-jobs-example
+
+The mq-bridge library is available here:
+https://github.com/marcomq/mq-bridge
+
+
+Feedback and contributions welcome.

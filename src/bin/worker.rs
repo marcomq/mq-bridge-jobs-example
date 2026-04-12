@@ -1,4 +1,4 @@
-use mq_bridge::{Handled, Route, type_handler::TypeHandler};
+use mq_bridge::{type_handler::TypeHandler, Handled, Route};
 use mq_bridge_jobs_example::jobs::{GenerateReport, SendEmail};
 use std::time::Duration;
 
