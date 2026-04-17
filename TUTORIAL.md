@@ -1,10 +1,10 @@
-**Remote jobs in Rust – from a file to NATS in three steps**
+**Switching from file-based jobs to NATS/Kafka in Rust without changing code**
 
 **Introduction**
 
-Every application eventually needs to offload work to another process. Parse a file, send an email, trigger a report – tasks that shouldn't block your main service and might even run on a different machine.
+Most applications eventually need to offload work to another process. Parse a file, send an email, trigger a report – tasks that shouldn't block your main service and might even run on a different machine.
 
-Most solutions require you to commit to their ecosystem from day one – their queue, their worker format, their retry logic. And if you want to swap the transport later, you're rewriting business logic.
+Most queue or stream solutions require you to commit to their ecosystem from day one – their broker, their worker format, their retry logic. And if you want to swap the transport later, due to a license change or some request from a good paying customer, you're rewriting business logic.
 
 I wanted something simpler: define your jobs once in plain Rust structs, start with a file during development, and switch to a real broker for production – without touching the handler code.
 
@@ -214,18 +214,19 @@ cargo run --bin submit
 ```
 
 The worker will receive the task and print:
-```
+```plaintext
 INFO worker: Sending email to user@example.com
 ```
 
 
 Instead of using the submit binary, you could also just simply push a new line to the file
-`echo '{"message_id":1,"payload":{"subject":"Welcome!","to":"user@example.com"},"metadata":{"kind":"send_mail"}}' > jobs.jsonl`
+```shell
+echo '{"message_id":1,"payload":{"subject":"Welcome!","to":"user@example.com"},"metadata":{"kind":"send_mail"}}' > jobs.jsonl
+```
 Afterwards `jobs.jsonl` is empty — because `FileConsumerMode::Consume { delete: true }` removes consumed lines. With `delete: false`, lines would be kept and replayed on the next worker start.
 
 
-There is alternatively a `GroupSubscribe` mode to prevent re-deliver by tracking the current 
-offset via separate `.offset` file, without deleting lines.
+There is alternatively a `GroupSubscribe` mode to prevent re-deliver by tracking the current offset via separate `.offset` file, without deleting lines.
 
 ---
 
@@ -269,10 +270,7 @@ let publisher = Publisher::new(route.input).await?;
 You can now load the configuration from a file or database. The code is smaller, and you can change the backend without touching your handler code.
 
 
-In a later production scenario, you might also want to use a separate publisher configuration. 
-The are properties that are only available for consumers or
-publishers and there would be a warning when using invalid settings.
-Also, you might want to configure a specific kafka group_id or use separate topics for fan out.
+In a later production scenario, you might also want to use a separate publisher configuration. The are properties that are only available for consumers or publishers and there would be a warning when using invalid settings. Also, you might want to configure a specific kafka group_id or use separate topics for fan out.
 But for this example, using a common NATS configuration works fine.
 
 ---
@@ -369,9 +367,7 @@ mq-bridge-app (cargo install mq-bridge-app).
 The code also shows how you would use mq-bridge as webserver.
 
 If you just need a simple send and receive - this is also available. You may skip the 
-whole event handler and route concept and just use the same API calls for Http, gRPC, MongoDb, Kafka,
-RabbitMQ and NATS. They all have the same `receive` and `publish` method and use
-the same message struct `CanonicalMessage` for transport.
+whole event handler and route concept and just use the same API calls for Http, gRPC, MongoDb, Kafka, RabbitMQ and NATS. They all have the same `receive` and `publish` method and use the same message struct `CanonicalMessage` for transport.
 
 ---
 
@@ -449,7 +445,7 @@ during compile time when reading configs during runtime.
 
 **Conclusion**
 
-mq-bridge covers more than just background jobs. You can use it for events, or to send and receive messages from existing brokers. And you can scale up by adding Kafka as a buffer or fan-out layer — again, just config.
+mq-bridge covers more than just remote jobs. You can use it for events, or to send and receive messages from existing brokers. And you can scale up by adding Kafka as a buffer or fan-out layer — again, just config.
 
 mq-bridge is still a young library. Don't expect it to be as complete as Watermill (Go)  or Java Spring. It uses some of their concepts, but it doesn't try to be the same — event sourcing and aggregate management are out of scope for now, as the focus is on transport. Documentation is still growing, and this tutorial is a first step toward that.
 
@@ -458,7 +454,7 @@ This tutorial is available here:
 https://github.com/marcomq/mq-bridge-jobs-example
 
 The mq-bridge library is available here:
+(I’m the author of mq-bridge, just for transparency.)
 https://github.com/marcomq/mq-bridge
-
 
 Feedback and contributions welcome.
