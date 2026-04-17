@@ -155,7 +155,7 @@ Enable nats feature:
 mq-bridge = { version = "0.2.11", features = ["nats"] }
 ```
 
-Update config:
+Create config [src/bin/config.json](./src/bin/config.json):
 
 ```json
 {
@@ -174,7 +174,7 @@ Start nats
 docker run -p 4222:4222 nats:2.12.2 -js
 ```
 
-- No changes to handler code required.
+- No changes to handler code required, re-run previous cargo commands.
 
 ---
 
