@@ -1,12 +1,15 @@
+**Remote jobs in Rust – from a file to NATS in three steps**
+
 **Introduction**
 
-Every web application eventually needs background jobs. Send an email, resize an image, import some data. Most background job libraries in other languages require you to commit to their ecosystem from day one – their queue, their worker format, their retry logic.
+Every application eventually needs to offload work to another process. Parse a file, send an email, trigger a report – tasks that shouldn't block your main service and might even run on a different machine.
 
-I wanted something simpler. Start with a file during development, switch to a real broker for production – without changing my business logic.
+Most solutions require you to commit to their ecosystem from day one – their queue, their worker format, their retry logic. And if you want to swap the transport later, you're rewriting business logic.
 
-This is how I built a background job system in Rust using [mq-bridge](https://github.com/marcomq/mq-bridge).
+I wanted something simpler: define your jobs once in plain Rust structs, start with a file during development, and switch to a real broker for production – without touching the handler code.
 
----[mq-bridge-jobs-tutorial](https://github.com/marcomq/mq-bridge-jobs-example)
+This is how I built a remote job system in Rust using [mq-bridge](https://github.com/marcomq/mq-bridge).
+
 
 **Step 1: Create Cargo.toml**
 
@@ -79,7 +82,7 @@ Let's also add a `lib.rs` file:
 pub mod jobs;
 ```
 
-Then we register handlers for each job type using `TypeHandler`:
+Then we register handlers for each job type using mq-bridge `TypeHandler`:
 
 ```rust
 // src/bin/worker.rs
@@ -161,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-To submit a job, just append a line to `jobs.jsonl` in our `submit.rs`:
+To submit a job, just append a new line to `jobs.jsonl` in our `submit.rs`:
 
 ```rust
 // src/bin/submit.rs
@@ -216,13 +219,13 @@ INFO worker: Sending email to user@example.com
 ```
 
 
-Instead of using the submit binary, you could also just simply write a line to the file
+Instead of using the submit binary, you could also just simply push a new line to the file
 `echo '{"message_id":1,"payload":{"subject":"Welcome!","to":"user@example.com"},"metadata":{"kind":"send_mail"}}' > jobs.jsonl`
 Afterwards `jobs.jsonl` is empty — because `FileConsumerMode::Consume { delete: true }` removes consumed lines. With `delete: false`, lines would be kept and replayed on the next worker start.
 
 
-There is also a `GroupSubscribe` to prevent re-deliver by tracking the current 
-offset via separate `.offset` file.
+There is alternatively a `GroupSubscribe` mode to prevent re-deliver by tracking the current 
+offset via separate `.offset` file, without deleting lines.
 
 ---
 
@@ -266,7 +269,7 @@ let publisher = Publisher::new(route.input).await?;
 You can now load the configuration from a file or database. The code is smaller, and you can change the backend without touching your handler code.
 
 
-In a later production scenario, you might want to use a separate publisher configuration. 
+In a later production scenario, you might also want to use a separate publisher configuration. 
 The are properties that are only available for consumers or
 publishers and there would be a warning when using invalid settings.
 Also, you might want to configure a specific kafka group_id or use separate topics for fan out.
@@ -276,7 +279,7 @@ But for this example, using a common NATS configuration works fine.
 
 **Step 5: Switch to NATS for production**
 
-To run the worker on a separate machine, you'll want a real broker. NATS is a great fit — it's lightweight, just a single binary with no dependencies.
+To run the worker on a separate machine, you'll want a broker or database. NATS is a great fit — it's lightweight, just a single binary with no dependencies and stores messages.
 
 First, enable the `nats` feature in `Cargo.toml`:
 
@@ -285,7 +288,7 @@ mq-bridge = { version = "0.2.11", features = ["nats"] }
 ```
 
 This just enables the "nats" feature. We can simply re-run the previous
-example. Nothing changes yet, it just needs longer to compile.
+example. Nothing changes yet, still using file, it just needs longer to compile.
 
 Start NATS with JetStream:
 
@@ -301,7 +304,7 @@ sudo apt install ./nats-server-linux-amd64.deb && nats-server -js
 docker run -p 4222:4222 nats:2.12.2 -js
 ```
 
-One config change, no code changes:
+One config.json file change, no code changes:
 
 ```json
 {
@@ -366,8 +369,9 @@ mq-bridge-app (cargo install mq-bridge-app).
 The code also shows how you would use mq-bridge as webserver.
 
 If you just need a simple send and receive - this is also available. You may skip the 
-whole event handler and route concept and just use the same API calls for Kafka,
-RabbitMQ and NATS.
+whole event handler and route concept and just use the same API calls for Http, gRPC, MongoDb, Kafka,
+RabbitMQ and NATS. They all have the same `receive` and `publish` method and use
+the same message struct `CanonicalMessage` for transport.
 
 ---
 
@@ -398,12 +402,10 @@ async fn send_mail(publisher: Publisher) -> Result<(), Box<dyn std::error::Error
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // init logging
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
         .init();
 
-    // actual stuff
     let route: Route = serde_json::from_str(include_str!("config.json"))?;
     let publisher = Publisher::new(route.input).await?;
     send_mail(publisher).await
@@ -441,7 +443,7 @@ No broker, no file, no test containers. The same `TypeHandler` that runs in prod
 Not all aspects and features of brokers or databases are supported. Some features 
 are emulated, other features may not be implemented yet. Don't expect a full grown
 framework that guides you on how to do stuff or already prevents misconfiguration
-during compile time.
+during compile time when reading configs during runtime.
 
 ---
 
